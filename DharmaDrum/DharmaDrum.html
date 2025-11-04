@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dharma Drum</title>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+        .item {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .item:hover {
+            background: #f0f0f0;
+        }
+        .item img {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            -webkit-touch-callout: none; /* iOS: disable callout menu */
+            -webkit-user-drag: none;    /* disable image drag */
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        #debug-overlay {
+            position: fixed;
+            right: 8px;
+            top: 8px;
+            max-width: 40%;
+            max-height: 40%;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            font-size: 12px;
+            padding: 6px;
+            z-index: 99999;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="item" id="drum">
+            <img src="images/Drum.jpeg" alt="Drum" draggable="false">
+        </div>
+        <div class="item" id="khanh">
+            <img src="images/Khanh.jpeg" alt="Khanh" draggable="false">
+        </div>
+        <div class="item" id="gong">
+            <img src="images/Gong.jpeg" alt="Gong" draggable="false">
+        </div>
+    </div>
+    <audio id="audio-drum" src="audio/tieng_mo_tram.mp3"></audio>
+    <audio id="audio-gong" src="audio/ChuongThayPhuocTinh.mp3"></audio>
+    <audio id="audio-khanh" src="audio/1_Khanh_23.2s.mp3"></audio>
+    <audio id="audio-khanh-chap" src="audio/Khanh_Chap.mp3"></audio>
+    <script>
+        // Global hold threshold constant
+        const HOLD_THRESHOLD = 200;
+
+        // Simple on-screen debug overlay (enable by adding ?debug=1 to the URL)
+        const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+        function ensureDebugOverlay() {
+            if (!document.getElementById('debug-overlay')) {
+                const d = document.createElement('div');
+                d.id = 'debug-overlay';
+                Object.assign(d.style, {
+                    position: 'fixed',
+                    right: '8px',
+                    top: '8px',
+                    maxWidth: '40%',
+                    maxHeight: '40%',
+                    overflowY: 'auto',
+                    background: 'rgba(0,0,0,0.7)',
+                    color: 'white',
+                    fontSize: '12px',
+                    padding: '6px',
+                    zIndex: 99999,
+                    borderRadius: '6px'
+                });
+                document.body.appendChild(d);
+            }
+            return document.getElementById('debug-overlay');
+        }
+        function showLog(msg) {
+            try { console.log(msg); } catch (e) {}
+            if (!DEBUG) return;
+            const d = ensureDebugOverlay();
+            const p = document.createElement('div');
+            p.textContent = (new Date()).toLocaleTimeString() + ' — ' + msg;
+            d.appendChild(p);
+            // keep overlay from growing infinitely
+            if (d.childNodes.length > 100) d.removeChild(d.firstChild);
+        }
+
+        // --- WebAudio manager (preload buffers, low-latency play, gain-based fades)
+        let audioCtx = null;
+        let masterGain = null;
+        const BUFFERS = {};
+        let webAudioReady = false;
+
+        async function initWebAudio() {
+            if (audioCtx) return;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            audioCtx = new AC();
+            masterGain = audioCtx.createGain();
+            masterGain.connect(audioCtx.destination);
+            try {
+                // preload and decode
+                const list = [
+                    ['drum','audio/tieng_mo_tram.mp3'],
+                    ['gong','audio/ChuongThayPhuocTinh.mp3'],
+                    ['khanh','audio/1_Khanh_23.2s.mp3']
+                ];
+                await Promise.all(list.map(async ([name, url]) => {
+                    const resp = await fetch(url);
+                    const ab = await resp.arrayBuffer();
+                    BUFFERS[name] = await audioCtx.decodeAudioData(ab.slice ? ab.slice(0) : ab);
+                }));
+                webAudioReady = true;
+                showLog('WebAudio ready');
+            } catch (e) {
+                showLog('WebAudio init failed');
+                webAudioReady = false;
+            }
+        }
+
+        function resumeAudioContext() {
+            if (!audioCtx) return;
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(()=>{});
+            }
+        }
+
+        // ensure audio is unlocked on first gesture
+        function unlockWebAudioOnce() {
+            if (!audioCtx) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+            window.removeEventListener('touchstart', unlockWebAudioOnce);
+            window.removeEventListener('mousedown', unlockWebAudioOnce);
+        }
+        window.addEventListener('touchstart', unlockWebAudioOnce, {passive:true});
+        window.addEventListener('mousedown', unlockWebAudioOnce, {passive:true});
+
+        function playBuffer(name, opts = {}) {
+            if (!webAudioReady || !audioCtx || !BUFFERS[name]) return null;
+            const src = audioCtx.createBufferSource();
+            src.buffer = BUFFERS[name];
+            src.loop = opts.loop || false;
+            const g = audioCtx.createGain();
+            g.gain.value = (typeof opts.volume === 'number') ? opts.volume : 1;
+            src.connect(g);
+            g.connect(masterGain);
+            const startAt = audioCtx.currentTime + (opts.delay || 0);
+            try { src.start(startAt); } catch(e) {}
+            return { src, gainNode: g };
+        }
+
+        function fadeOutBuffer(name, durationSec = 1.0) {
+            if (!webAudioReady) return null;
+            const h = playBuffer(name, { volume: 1 });
+            if (!h) return null;
+            const now = audioCtx.currentTime;
+            try {
+                h.gainNode.gain.setValueAtTime(1, now);
+                h.gainNode.gain.linearRampToValueAtTime(0, now + durationSec);
+            } catch (e) {}
+            // stop source after fade
+            setTimeout(() => { try { h.src.stop(); } catch (e) {} }, (durationSec * 1000) + 50);
+            return h;
+        }
+
+        // initialize WebAudio in background (will decode into memory)
+        initWebAudio();
+
+        // Drum click handler (press-and-hold will be handled later)
+        const drumElem = document.getElementById('drum');
+        const drumAudio = document.getElementById('audio-drum');
+        let drumLastBeats = [null, null]; // store last 2 beat times
+        let drumLastClickTime = null;
+        let drumLoopActive = false;
+        let drumLoopTimer = null;
+        let drumHoldStart = null;
+        let drumHoldTimer = null;
+        let drumPlayedOnPress = false;
+        let drumPressTime = 0;
+        let drumLastPlayTime = 0;
+        let suppressMouse = false;
+        // Debounce for drum single-play derived from HOLD_THRESHOLD so quick manual beats work
+        const DRUM_DEBOUNCE = Math.max(40, Math.floor(HOLD_THRESHOLD / 4));
+
+        function drumPlayOnce() {
+            const now = Date.now();
+            if (now - drumLastPlayTime < DRUM_DEBOUNCE) return; // debounce derived from HOLD_THRESHOLD
+            drumLastPlayTime = now;
+            if (webAudioReady) {
+                playBuffer('drum');
+                return;
+            }
+            try {
+                drumAudio.currentTime = 0;
+                drumAudio.play();
+            } catch (e) {
+                // ignore play errors
+            }
+        }
+
+        function drumHoldBegin() {
+            // record beat interval on press
+            const now = Date.now();
+            if (drumLastClickTime) {
+                const interval = now - drumLastClickTime;
+                drumLastBeats[0] = drumLastBeats[1];
+                drumLastBeats[1] = interval;
+            }
+            drumLastClickTime = now;
+
+            drumHoldStart = now;
+            drumPressTime = now;
+            drumPlayedOnPress = true;
+            // play immediate hit on press
+            drumPlayOnce();
+            // set timer to start continuous loop if still held after HOLD_THRESHOLD
+            if (drumHoldTimer) clearTimeout(drumHoldTimer);
+            drumHoldTimer = setTimeout(() => {
+                // only start loop if we have two intervals
+                if (drumLastBeats[0] && drumLastBeats[1]) {
+                    const cadence = Math.round((drumLastBeats[0] + drumLastBeats[1]) / 2);
+                    drumLoopActive = true;
+                    function drumLoop() {
+                        if (!drumLoopActive) return;
+                        if (webAudioReady) {
+                            playBuffer('drum');
+                        } else {
+                            drumPlayOnce();
+                        }
+                        drumLoopTimer = setTimeout(drumLoop, cadence);
+                    }
+                    // start first beat after one cadence to avoid immediate double-play
+                    drumLoopTimer = setTimeout(drumLoop, cadence);
+                }
+            }, HOLD_THRESHOLD);
+        }
+
+        function drumHoldEnd() {
+            // clear pending hold timer
+            if (drumHoldTimer) {
+                clearTimeout(drumHoldTimer);
+                drumHoldTimer = null;
+            }
+            drumHoldStart = null;
+            // do not start loop here anymore; loop starts from hold timer when threshold reached
+        }
+
+        function drumExitLoop() {
+            drumLoopActive = false;
+            if (drumLoopTimer) {
+                clearTimeout(drumLoopTimer);
+                drumLoopTimer = null;
+            }
+        }
+
+        // Consolidated press-start handler: exit any loop then begin hold
+        function drumPressStart(e) {
+            drumExitLoop();
+            drumHoldBegin();
+        }
+
+        drumElem.addEventListener('mousedown', function(e){
+            if (suppressMouse) return; // ignore synthetic mouse after touch
+            drumPressStart(e);
+        });
+        drumElem.addEventListener('touchstart', function(e){
+            // suppress the following mouse event that some browsers emit
+            e.preventDefault();
+            suppressMouse = true;
+            setTimeout(()=>{ suppressMouse = false; }, 700);
+            drumPressStart(e);
+        }, { passive: false });
+        drumElem.addEventListener('mouseup', drumHoldEnd);
+        drumElem.addEventListener('mouseleave', drumHoldEnd);
+        drumElem.addEventListener('touchend', drumHoldEnd);
+        drumElem.addEventListener('touchcancel', drumHoldEnd);
+
+        // Gong press-and-hold handler: normal if <HOLD_THRESHOLD ms, fade-out if >=HOLD_THRESHOLD ms
+        const gongElem = document.getElementById('gong');
+        const gongAudio = document.getElementById('audio-gong');
+        let gongHoldTimer = null;
+        let gongHoldStart = 0;
+        let gongHeld = false;
+        let gongLastStart = 0;
+        
+        // detect iOS to adjust fade timing (Safari throttles timers)
+        const isIOS = /iP(ad|od|hone)/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const FADE_DURATION_MS = isIOS ? 800 : 1500;
+
+        function gongStartHold() {
+            const now = Date.now();
+            if (now - gongLastStart < 400) return; // debounce across pointer/touch/mouse
+            gongLastStart = now;
+            showLog('gongStartHold');
+            gongHoldStart = now;
+            gongHeld = false;
+            gongHoldTimer = setTimeout(() => {
+                showLog('gongFadeStart');
+                gongAudio.currentTime = 0;
+                gongAudio.volume = 1.0;
+                gongAudio.play();
+                gongHeld = true;
+                // Start fade out effect using total duration (shorter on iOS)
+                if (gongAudio._fadeInterval) { clearInterval(gongAudio._fadeInterval); gongAudio._fadeInterval = null; }
+                let fadeIntervalMs = 50;
+                let steps = Math.max(4, Math.ceil(FADE_DURATION_MS / fadeIntervalMs));
+                let step = 0;
+                let fadeInterval = setInterval(() => {
+                    step++;
+                    const newVol = Math.max(0, 1 - (step / steps));
+                    gongAudio.volume = newVol;
+                    if (step >= steps) {
+                        gongAudio.volume = 0;
+                        clearInterval(fadeInterval);
+                        showLog('gongFadeEnd');
+                        try { gongAudio.pause(); } catch(e){}
+                        gongAudio.currentTime = 0;
+                        gongAudio.volume = 1.0;
+                        gongAudio._fadeInterval = null;
+                        gongHeld = false;
+                        gongLastStart = 0;
+                    }
+                }, fadeIntervalMs);
+                gongAudio._fadeInterval = fadeInterval;
+            }, HOLD_THRESHOLD);
+        }
+        function gongEndHold() {
+            const elapsed = Date.now() - gongHoldStart;
+            if (gongHoldTimer) {
+                clearTimeout(gongHoldTimer);
+                gongHoldTimer = null;
+            }
+            if (gongHeld) {
+                // If fade-out is in progress, ignore release event
+                return;
+            } else if (elapsed < HOLD_THRESHOLD) {
+                if (webAudioReady) {
+                    playBuffer('gong');
+                } else {
+                    gongAudio.currentTime = 0;
+                    gongAudio.volume = 1.0;
+                    gongAudio.play();
+                }
+            }
+            // quick tap or release — allow future presses
+            gongLastStart = 0;
+        }
+        gongElem.addEventListener('mousedown', gongStartHold);
+        gongElem.addEventListener('touchstart', function(e){ e.preventDefault(); gongStartHold(); }, { passive: false });
+        gongElem.addEventListener('mouseup', gongEndHold);
+        gongElem.addEventListener('mouseleave', gongEndHold);
+        gongElem.addEventListener('touchend', gongEndHold);
+        gongElem.addEventListener('touchcancel', gongEndHold);
+        // Pointer events (more reliable on some iOS versions/browsers)
+        gongElem.addEventListener('pointerdown', function(e){ e.preventDefault(); gongStartHold(); });
+        gongElem.addEventListener('pointerup', function(e){ gongEndHold(); });
+        gongElem.addEventListener('pointercancel', function(e){ gongEndHold(); });
+
+        // Khanh press-and-hold handler: normal if <HOLD_THRESHOLD ms, fade-out if >=HOLD_THRESHOLD ms
+        const khanhElem = document.getElementById('khanh');
+        const khanhAudio = document.getElementById('audio-khanh');
+        let khanhHoldTimer = null;
+        let khanhHoldStart = 0;
+        let khanhHeld = false;
+        let khanhLastStart = 0;
+        function khanhStartHold() {
+            const now = Date.now();
+            if (now - khanhLastStart < 400) return; // debounce across pointer/touch/mouse
+            khanhLastStart = now;
+            showLog('khanhStartHold');
+            khanhHoldStart = now;
+            khanhHeld = false;
+            khanhHoldTimer = setTimeout(() => {
+                showLog('khanhFadeStart');
+                // clear any previous fade
+                if (khanhAudio._fadeInterval) { clearInterval(khanhAudio._fadeInterval); khanhAudio._fadeInterval = null; }
+                khanhAudio.currentTime = 0;
+                khanhAudio.volume = 1.0;
+                khanhAudio.play();
+                khanhHeld = true;
+                // Start fade out effect using total duration (shorter on iOS)
+                if (khanhAudio._fadeInterval) { clearInterval(khanhAudio._fadeInterval); khanhAudio._fadeInterval = null; }
+                let fadeIntervalMsK = 50;
+                let stepsK = Math.max(4, Math.ceil(FADE_DURATION_MS / fadeIntervalMsK));
+                let stepK = 0;
+                let fadeIntervalK = setInterval(() => {
+                    stepK++;
+                    const newVolK = Math.max(0, 1 - (stepK / stepsK));
+                    khanhAudio.volume = newVolK;
+                    if (stepK >= stepsK) {
+                        khanhAudio.volume = 0;
+                        clearInterval(fadeIntervalK);
+                        showLog('khanhFadeEnd');
+                        try { khanhAudio.pause(); } catch(e){}
+                        khanhAudio.currentTime = 0;
+                        khanhAudio.volume = 1.0;
+                        khanhAudio._fadeInterval = null;
+                        khanhHeld = false;
+                        khanhLastStart = 0;
+                    }
+                }, fadeIntervalMsK);
+                khanhAudio._fadeInterval = fadeIntervalK;
+            }, HOLD_THRESHOLD);
+        }
+        function khanhEndHold() {
+            const elapsed = Date.now() - khanhHoldStart;
+            if (khanhHoldTimer) {
+                clearTimeout(khanhHoldTimer);
+                khanhHoldTimer = null;
+            }
+            if (khanhHeld) {
+                // If fade-out is in progress, ignore release event
+                return;
+            } else if (elapsed < HOLD_THRESHOLD) {
+                if (webAudioReady) {
+                    playBuffer('khanh');
+                } else {
+                    khanhAudio.currentTime = 0;
+                    khanhAudio.volume = 1.0;
+                    khanhAudio.play();
+                }
+            }
+            // quick tap or release — allow future presses
+            khanhLastStart = 0;
+        }
+        khanhElem.addEventListener('mousedown', khanhStartHold);
+        khanhElem.addEventListener('touchstart', function(e){ e.preventDefault(); khanhStartHold(); }, { passive: false });
+        khanhElem.addEventListener('mouseup', khanhEndHold);
+        khanhElem.addEventListener('mouseleave', khanhEndHold);
+        khanhElem.addEventListener('touchend', khanhEndHold);
+        khanhElem.addEventListener('touchcancel', khanhEndHold);
+        // Pointer events (more reliable on some iOS versions/browsers)
+        khanhElem.addEventListener('pointerdown', function(e){ e.preventDefault(); khanhStartHold(); });
+        khanhElem.addEventListener('pointerup', function(e){ khanhEndHold(); });
+        khanhElem.addEventListener('pointercancel', function(e){ khanhEndHold(); });
+        
+        // Also handle touchcancel for drum
+        drumElem.addEventListener('touchcancel', drumHoldEnd);
+
+        // Prevent default context menu globally (extra safeguard)
+        document.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+        // Register service worker for offline caching (forces local serving after first load)
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js')
+                .then(reg => showLog('SW registered'))
+                .catch(err => showLog('SW reg failed: ' + (err && err.message ? err.message : err)));
+        }
+     </script>
+ </body>
+ </html>
