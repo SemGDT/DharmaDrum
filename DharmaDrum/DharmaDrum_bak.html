@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dharma Drum</title>
+
+    <!-- PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Dharma Drum">
+    <meta name="theme-color" content="#000000">
+
+    <!-- Icons -->
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+    <link rel="manifest" href="./manifest.json">
+
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            display: flex;
+            height: 50vh;
+            width: 100vw;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            z-index: 9999;
+        }
+        .item {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .item:hover {
+            background: #f0f0f0;
+        }
+        .item img {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            -webkit-touch-callout: none;
+            -webkit-user-drag: none;
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        #debug-overlay {
+            position: fixed;
+            right: 8px;
+            top: 8px;
+            max-width: 40%;
+            max-height: 40%;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            font-size: 12px;
+            padding: 6px;
+            z-index: 99999;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <audio id="background-drum-loop"
+        src="audio/tieng_mo_tram_loud_1s_3h.mp3"
+        preload="auto"
+        loop
+        data-basecadence="1000"></audio>
+
+    <audio id="biggong-100s"
+        src="audio/DHC_Truc_Lam_100s_20m.mp3"
+        preload="auto"
+        loop
+        data-basecadence="100000"></audio>
+    <audio id="biggong-80s"
+        src="audio/DHC_Truc_Lam_80s_20m.mp3"
+        preload="auto"
+        loop
+        data-basecadence="80000"></audio>
+    <audio id="biggong-60s"
+        src="audio/DHC_Truc_Lam_60s_20m.mp3"
+        preload="auto"
+        loop
+        data-basecadence="60000"></audio>
+    <audio id="biggong-40s"
+        src="audio/DHC_Truc_Lam_40s_20m.mp3"
+        preload="auto"
+        loop
+        data-basecadence="40000"></audio>
+    <audio id="biggong-20s"
+        src="audio/DHC_Truc_Lam_20s_20m.mp3"
+        preload="auto"
+        loop
+        data-basecadence="20000"></audio>
+
+    <div style="text-align:center; margin:30px; color:#fff; font-family:sans-serif; background:#2a4aa1; padding:20px; border:2px solid #333; border-radius:12px; width:320px; margin:auto;">
+
+    <!-- Volume slider (Big Gong) -->
+    <div style="margin-bottom:20px;">
+        <input type="range" id="biggongVolumeSlider" min="0" max="1" step="0.01" value="0.3"
+            style="width:100%; height:8px; border-radius:5px; background:#333;">
+        <div style="margin-top:8px; font-size:1.1em;">
+        Big Gong volume: <span id="biggongVol"></span>
+        </div>
+    </div>
+
+    <!-- 6 / 4 symbols radio buttons -->
+    <div style="margin-bottom:20px;">
+        <label style="margin:0 12px; font-size:1.1em;">
+        <input type="radio" name="symbols" value="6"> 6 symbols
+        </label>
+        <label style="margin:0 12px; font-size:1.1em;">
+        <input type="radio" name="symbols" value="4" checked> 4 symbols
+        </label>
+    </div>
+
+    <!-- ONLY THE TOTAL YOU CARE ABOUT -->
+    <div style="font-size:1.4em; color:#fff;; font-weight:bold;">
+        Total = <span id="recite-count">0</span>
+    </div>
+
+    </div>
+
+    <div class="container">
+        <div class="item" id="drum">
+            <img src="images/Drum.jpeg" alt="Drum" draggable="false">
+        </div>
+        <div class="item" id="khanh">
+            <img src="images/Khanh.jpeg" alt="Khanh" draggable="false">
+        </div>
+        <div class="item" id="gong">
+            <img src="images/Gong.jpeg" alt="Gong" draggable="false">
+        </div>
+    </div>
+    <audio id="audio-drum" src="audio/tieng_mo_tram_loud.mp3"></audio>
+    <audio id="audio-gong" src="audio/ChuongThayPhuocTinh.mp3"></audio>
+    <audio id="audio-khanh" src="audio/1_Khanh_23.2s.mp3"></audio>
+    <audio id="audio-khanh-chap" src="audio/Khanh_Chap.mp3"></audio>
+ <script>
+    // Listen for visibility change (screen off/on, app switching, etc.)
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible') {
+            // Resume audio context
+            try {
+                if (audioCtx && audioCtx.state === 'suspended') {
+                    await audioCtx.resume();
+                    console.log('audioCtx resumed on visibilitychange');
+                }
+            } catch (e) {
+                console.warn('Resume failed until user tap:', e);
+            }
+        }
+    });
+
+    const HOLD_THRESHOLD = 200;
+    const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+    const isIOS = /iP(ad|od|hone)/i.test(navigator.userAgent) ||
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const FADE_TIME_MS = isIOS ? 600 : 750;
+
+    // --- Debug utilities ---
+    function showLog(msg) {
+        if (DEBUG) {
+            let d = document.getElementById('debug-overlay');
+            if (!d) {
+                d = document.createElement('div');
+                d.id = 'debug-overlay';
+                Object.assign(d.style, {
+                    position:'fixed', right:'8px', top:'8px',
+                    maxWidth:'40%', maxHeight:'40%',
+                    overflowY:'auto', background:'rgba(0,0,0,0.7)',
+                    color:'white', fontSize:'12px', padding:'6px',
+                    zIndex:99999, borderRadius:'6px'
+                });
+                document.body.appendChild(d);
+            }
+            const p = document.createElement('div');
+            p.textContent = (new Date()).toLocaleTimeString() + ' — ' + msg;
+            d.appendChild(p);
+            if (d.childNodes.length > 100) d.removeChild(d.firstChild);
+        }
+        console.log(msg);
+    }
+
+    // --- WebAudio setup ---
+    let audioCtx = null, masterGain = null, BUFFERS = {}, webAudioReady = false;
+    async function initWebAudio() {
+        if (audioCtx) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        masterGain = audioCtx.createGain();
+        masterGain.connect(audioCtx.destination);
+
+        const list = [
+            ['drum','audio/tieng_mo_tram_loud.mp3'],
+            ['gong','audio/ChuongThayPhuocTinh.mp3'],
+            ['khanh','audio/1_Khanh_23.2s.mp3']
+        ];
+        try {
+            await Promise.all(list.map(async ([name,url])=>{
+                const resp = await fetch(url);
+                const ab = await resp.arrayBuffer();
+                BUFFERS[name] = await audioCtx.decodeAudioData(ab);
+            }));
+            webAudioReady = true;
+            showLog('WebAudio ready');
+        } catch(e) {
+            showLog('WebAudio init failed');
+        }
+    }
+
+    let audioWarmedUp = false;
+    function warmUpAudio() {
+        if (audioWarmedUp) return;
+        audioWarmedUp = true;
+
+        showLog('Starting warm-up...');
+
+        ['background-drum-loop', ...biggongs.map(g => g.id)].forEach(id => {
+            const el = document.getElementById(id);
+            if(el) {
+                // For iOS: keep playing but muted and at very low currentTime
+                // This maintains the user gesture permission
+                el.muted = true;
+                el.loop = true;
+                el.volume = 0;
+
+                if (el.readyState === 0) el.load();
+
+                el.play().then(() => {
+                   showLog(`Warmed up ${id} (playing muted)`);
+                }).catch(e => {
+                    showLog(`Warm up failed for ${id}: ${e.message}`);
+                });
+            }
+        });
+    }
+
+    initWebAudio();
+
+    // --- Global unlock ---
+    let audioUnlocked = false;
+
+    // --- Central playback ---
+    const activeSources = {};
+    const htmlAudios = {
+        drum: document.getElementById('audio-drum'),
+        gong: document.getElementById('audio-gong'),
+        khanh: document.getElementById('audio-khanh')
+    };
+
+    function playBuffer(name, opts={}) {
+        const fadeOut = opts.fadeOut === true;
+        showLog(`playBuffer: ${name}, fadeOut=${fadeOut}`);
+
+        const hasWeb = audioCtx && webAudioReady && BUFFERS[name];
+        const firstGesture = !audioUnlocked;
+
+        if (hasWeb && !firstGesture && audioCtx.state === 'running') {
+            showLog(`▶️ WebAudio START: ${name} (fadeOut=${fadeOut})`);
+
+            const htmlAudio = htmlAudios[name];
+            if (htmlAudio) {
+                try {
+                    htmlAudio.pause();
+                    htmlAudio.currentTime = 0;
+                    showLog(`Stopped HTML audio for ${name}`);
+                } catch(e) {
+                    showLog(`Error stopping HTML audio: ${e.message}`);
+                }
+            }
+
+            if (audioCtx.state === "suspended") {
+                audioCtx.resume().catch(()=>{});
+            }
+
+            const prev = activeSources[name];
+            if (prev) {
+                try {
+                    prev.gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+                    prev.source.stop(0);
+                    prev.source.disconnect();
+                    prev.gainNode.disconnect();
+                    showLog(`Stopped previous WebAudio source for ${name}`);
+                } catch(e){
+                    showLog(`Error stopping previous WebAudio: ${e.message}`);
+                }
+            }
+
+            const source = audioCtx.createBufferSource();
+            source.buffer = BUFFERS[name];
+
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+
+            source.connect(gainNode);
+            gainNode.connect(masterGain);
+
+            source.start(0);
+            showLog(`WebAudio source started, buffer duration: ${source.buffer.duration.toFixed(2)}s`);
+
+            if (fadeOut) {
+                const now = audioCtx.currentTime;
+                const fadeTime = FADE_TIME_MS / 1000;
+
+                gainNode.gain.cancelScheduledValues(now);
+                gainNode.gain.setValueAtTime(1, now);
+                gainNode.gain.linearRampToValueAtTime(0, now + fadeTime);
+
+                source.stop(now + fadeTime + 0.05);
+
+                showLog(`WebAudio fade scheduled: ${fadeTime}s`);
+
+                setTimeout(() => {
+                    showLog(`WebAudio fade complete`);
+                }, FADE_TIME_MS);
+            }
+
+            activeSources[name] = { source, gainNode };
+
+            source.onended = () => {
+                if (activeSources[name]?.source === source) {
+                    activeSources[name] = null;
+                }
+            };
+
+            showLog(`▶️ WebAudio DONE: ${name} (fadeOut=${fadeOut})`);
+            return;
+        }
+
+        const a = htmlAudios[name];
+        if (!a) {
+            showLog(`No WebAudio and no HTML audio for ${name}`);
+            return;
+        }
+
+        showLog(`HTML audio for ${name} (firstGesture=${firstGesture})`);
+
+        if (firstGesture) {
+            audioUnlocked = true;
+            showLog('Audio unlocked via HTML audio');
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(() => {});
+            }
+        }
+
+        try {
+            a.pause();
+            a.currentTime = 0;
+            a.volume = 1;
+        } catch (e) {
+            showLog(`Error resetting HTML audio: ${e.message}`);
+        }
+
+        if (fadeOut) {
+            try { a.play().catch(() => {}); } catch {}
+            const steps = 15;
+            const delay = FADE_TIME_MS / steps;
+            let step = 0;
+            const iv = setInterval(() => {
+                step++;
+                a.volume = Math.max(0, 1 - step / steps);
+                if (step >= steps) {
+                    clearInterval(iv);
+                    try { a.pause(); } catch {}
+                    a.currentTime = 0;
+                    a.volume = 1;
+                    showLog(`${name} HTML fadeOut complete`);
+                }
+            }, delay);
+        } else {
+            if (isIOS) {
+                try {
+                    const playPromise = a.play();
+                    if (playPromise !== undefined) {
+                        playPromise
+                            .then(() => {
+                                showLog(`▶️ HTML START (sync): ${name} — iOS unlocked`);
+                            })
+                            .catch((err) => {
+                                showLog(`HTML play failed (even sync): ${err.message}`);
+                            });
+                    } else {
+                        showLog(`▶️ HTML START (sync): ${name} — iOS unlocked (no Promise)`);
+                    }
+                } catch (err) {
+                    showLog(`Direct HTML play threw: ${err.message}`);
+                }
+            } else {
+                setTimeout(()=>{
+                    try { a.play().catch(()=>{}); } catch {}
+                    showLog(`▶️ HTML START: ${name}`);
+                }, 0);
+            }
+        }
+    }
+
+    // --- Drum logic ---
+    const drumElem = document.getElementById('drum');
+    let drumLastPlayTime = 0, DRUM_DEBOUNCE = Math.max(40, Math.floor(HOLD_THRESHOLD/4));
+    let drumLoopActive=false, drumHoldTimer=null, drumLastBeats=[null,null], drumLastClickTime=null, cadence=0, lastPressStartTime = 0;
+    const PRESS_DEBOUNCE = 100;
+    let backgroundStartTimeout = null;
+    let backgroundStartTime = 0;
+
+    function drumPlayOnce() {
+        const now = Date.now();
+        if (now - drumLastPlayTime < DRUM_DEBOUNCE) return;
+        drumLastPlayTime = now;
+        playBuffer('drum');
+    }
+
+    function drumHoldBegin() {
+        const now = Date.now();
+
+        if (drumLastClickTime) {
+            const interval = now - drumLastClickTime;
+            drumLastBeats[0] = drumLastBeats[1];
+            drumLastBeats[1] = interval;
+            showLog(`Beat recorded: ${interval}ms, beats=[${drumLastBeats[0]}, ${drumLastBeats[1]}]`);
+        }
+        drumLastClickTime = now;
+        drumPlayOnce();
+
+        if(drumHoldTimer) clearTimeout(drumHoldTimer);
+        drumHoldTimer = setTimeout(()=>{
+            if(drumLastBeats[0] && drumLastBeats[1]){
+                cadence = Math.round((drumLastBeats[0]+drumLastBeats[1])/2);
+                showLog(`Starting drum loop with cadence: ${cadence}ms`);
+
+                drumLastBeats = [null, null];
+                drumLastClickTime = null;
+
+                const biggongCadence = cadence * 10 * selectedSymbols;
+                const selectedGong = selectBigGongAudio(biggongCadence);
+                const biggongVolume = parseFloat(biggongVolumeSlider.value);
+
+                if (backgroundStartTimeout) {
+                    clearTimeout(backgroundStartTimeout);
+                    showLog('Cleared existing background start timeout');
+                }
+
+                const delay = cadence - HOLD_THRESHOLD;
+                showLog(`Scheduling background audio to start in ${delay}ms`);
+
+                backgroundStartTimeout = setTimeout(() => {
+                    backgroundStartTimeout = null;
+                    showLog('▶️ DELAYED START - Starting background audio NOW');
+                    startBackgroundAudio(backgroundDrumAudio, cadence, 1);
+                    drumLoopActive = true;
+                    if (selectedGong) {
+                        startBackgroundAudio(selectedGong, biggongCadence, biggongVolume);
+                    }
+                }, delay);
+            } else {
+                showLog(`Not enough beats yet: [${drumLastBeats[0]}, ${drumLastBeats[1]}]`);
+            }
+        }, HOLD_THRESHOLD);
+    }
+
+    function drumHoldEnd() {
+        if(drumHoldTimer) clearTimeout(drumHoldTimer);
+    }
+
+    function drumExitLoop() {
+        showLog(`drumExitLoop called: drumLoopActive=${drumLoopActive}, backgroundStartTimeout=${backgroundStartTimeout !== null}`);
+
+        if (backgroundStartTimeout) {
+            clearTimeout(backgroundStartTimeout);
+            backgroundStartTimeout = null;
+            showLog('Cancelled pending background audio start');
+        }
+
+        if (drumLoopActive) {
+            showLog('Was in loop, clearing beat history');
+            drumLastBeats = [null, null];
+            drumLastClickTime = null;
+            drumLoopActive = false;
+            if (cadence > 0 && currentBigGong) {
+                const biggongCadence = cadence * 10 * selectedSymbols;
+                if (biggongCadence > 0) {
+                    reciteCount.textContent = (Date.now() - backgroundStartTime) / biggongCadence;
+                }
+            }
+            stopBackgroundAudio(backgroundDrumAudio);
+            if (currentBigGong) {
+                stopBackgroundAudio(currentBigGong);
+            }
+        } else {
+            showLog('Not in loop, nothing to stop');
+        }
+    }
+
+    function drumPressStart() {
+        const now = Date.now();
+        if (now - lastPressStartTime < PRESS_DEBOUNCE) {
+            return;
+        }
+        lastPressStartTime = now;
+
+        if (drumLoopActive) {
+            drumExitLoop();
+            drumPlayOnce();
+        } else {
+            drumHoldBegin();
+        }
+    }
+
+    drumElem.addEventListener('mouseup', drumHoldEnd);
+    drumElem.addEventListener('mouseleave', drumHoldEnd);
+    let drumSuppressMouse = false;
+
+    drumElem.addEventListener('touchstart', e => {
+        e.preventDefault();
+        drumSuppressMouse = true;
+        setTimeout(() => { drumSuppressMouse = false; }, 700);
+
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(()=>{});
+        }
+
+        // Warm up on first drum interaction (happens in background)
+        warmUpAudio();
+
+        drumPressStart();
+    }, { passive: false });
+
+    drumElem.addEventListener('mousedown', function(e){
+        if (drumSuppressMouse) return;
+        drumPressStart(e);
+    });
+    drumElem.addEventListener('touchend', drumHoldEnd);
+    drumElem.addEventListener('touchcancel', drumHoldEnd);
+
+    const backgroundDrumAudio = document.getElementById('background-drum-loop');
+    const biggongVolumeSlider = document.getElementById('biggongVolumeSlider');
+    const biggongVolDisplay = document.getElementById('biggongVol');
+    const reciteCount = document.getElementById('recite-count');
+
+    const biggongs = [
+        document.getElementById('biggong-100s'),
+        document.getElementById('biggong-80s'),
+        document.getElementById('biggong-60s'),
+        document.getElementById('biggong-40s'),
+        document.getElementById('biggong-20s')
+    ];
+    let currentBigGong = null;
+
+    function selectBigGongAudio(targetCadence) {
+        if (!targetCadence || targetCadence <= 0) return null;
+
+        let bestGong = null;
+        let bestDistance = Infinity;
+
+        biggongs.forEach(gong => {
+            const baseCadence = parseInt(gong.dataset.basecadence, 10);
+            if (!baseCadence) return;
+
+            const rate = baseCadence / targetCadence;
+            const distance = Math.abs(rate - 1.0);
+
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestGong = gong;
+            }
+        });
+
+        if (!bestGong) {
+            bestGong = biggongs[biggongs.length - 1];
+        }
+
+        if (currentBigGong && currentBigGong !== bestGong) {
+            stopBackgroundAudio(currentBigGong);
+        }
+
+        currentBigGong = bestGong;
+
+        return bestGong;
+    }
+
+    function startBackgroundAudio(backgroundAudio, cadence, backgroundVolume) {
+        if (!backgroundAudio) {
+            showLog('❌ Background audio element not found, cannot play.');
+            return;
+        }
+
+        showLog(`Starting background audio ${backgroundAudio.id} with cadence ${cadence} ms, paused=${backgroundAudio.paused}, muted=${backgroundAudio.muted}`);
+
+        const baseCadence = parseInt(backgroundAudio.dataset.basecadence, 10);
+        const playbackRate = baseCadence / cadence;
+
+        showLog(`Calculated playback rate: ${playbackRate.toFixed(3)}x`);
+
+        try {
+            backgroundAudio.playbackRate = playbackRate;
+        } catch (e) {
+            showLog(`⚠️ Failed to set playback rate: ${e.message}`);
+            backgroundAudio.playbackRate = Math.max(0.25, Math.min(4.0, playbackRate));
+        }
+
+        // ALWAYS update these settings
+        backgroundStartTime = Date.now();
+        backgroundAudio.currentTime = 0;
+        backgroundAudio.loop = true;
+        backgroundAudio.volume = backgroundVolume;
+        backgroundAudio.muted = false; // UNMUTE!
+
+        showLog(`✅ Unmuted and configured ${backgroundAudio.id} - volume=${backgroundVolume}, muted=${backgroundAudio.muted}`);
+
+        // If paused, play it
+        if (backgroundAudio.paused) {
+            backgroundAudio.play().catch((err) => {
+                showLog(`❌ Background audio play failed for ${backgroundAudio.id}: ${err.message}`);
+            });
+        }
+    }
+
+    function stopBackgroundAudio(backgroundAudio) {
+        if (!backgroundAudio) return;
+
+        showLog(`Stopping background audio ${backgroundAudio.id}`);
+        try {
+            if (isIOS) {
+                backgroundAudio.muted = true;
+                backgroundAudio.volume = 0;
+                backgroundAudio.currentTime = 0;
+                showLog(`iOS: Muted ${backgroundAudio.id} but keeping it playing`);
+            } else {
+                backgroundAudio.pause();
+                backgroundAudio.currentTime = 0;
+            }
+        } catch(e) {
+            showLog('Error stopping audio: ' + e.message);
+        }
+    }
+
+    let selectedSymbols = 4;
+
+    let biggongVolume = 0.3;
+    biggongVolumeSlider.addEventListener('input', (e) => {
+        const vol = parseFloat(e.target.value);
+        biggongVolume = vol;
+        if (currentBigGong) {
+            currentBigGong.volume = vol;
+        }
+        biggongVolDisplay.textContent = vol.toFixed(2);
+    });
+
+    document.querySelectorAll('input[name="symbols"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            selectedSymbols = parseInt(e.target.value);
+        });
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const checkedSymbol = document.querySelector('input[name="symbols"]:checked');
+        if (checkedSymbol) {
+            selectedSymbols = parseInt(checkedSymbol.value);
+        }
+
+        const initialVolume = parseFloat(biggongVolumeSlider.value);
+        biggongVolume = initialVolume;
+        biggongVolDisplay.textContent = initialVolume.toFixed(2);
+
+        if (isIOS) {
+            biggongVolumeSlider.parentElement.style.display = 'none';
+        }
+    });
+
+    function setupHoldFade(elemName, htmlAudio){
+        const elem = document.getElementById(elemName);
+        let holdTimer = null;
+        let holdStart = 0;
+        let held = false;
+
+        function onStart(e){
+            e.preventDefault && e.preventDefault();
+            holdStart = Date.now();
+            held = false;
+
+            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+
+            holdTimer = setTimeout(()=>{
+                holdTimer = null;
+                held = true;
+                playBuffer(elemName, { fadeOut: true });
+            }, HOLD_THRESHOLD);
+        }
+
+        function onEnd(e){
+            e.preventDefault && e.preventDefault();
+            const elapsed = Date.now() - holdStart;
+
+            if(holdTimer){ clearTimeout(holdTimer); holdTimer = null; }
+
+            if(!held && elapsed < HOLD_THRESHOLD){
+                playBuffer(elemName);
+            }
+        }
+
+        elem.addEventListener('touchstart', onStart, { passive: false });
+        elem.addEventListener('mousedown', onStart, { passive: false });
+        elem.addEventListener('touchend', onEnd);
+        elem.addEventListener('mouseup', onEnd);
+        elem.addEventListener('touchcancel', onEnd);
+        elem.addEventListener('mouseleave', onEnd);
+    }
+
+    setupHoldFade('gong', htmlAudios['gong']);
+    setupHoldFade('khanh', htmlAudios['khanh']);
+
+    document.addEventListener('contextmenu', e=>e.preventDefault());
+
+    if('serviceWorker' in navigator){
+        navigator.serviceWorker.register('./sw.js')
+            .then(reg => {
+                showLog('SW registered');
+                reg.update();
+            })
+            .catch(err=>showLog('SW reg failed: '+err.message));
+
+        navigator.serviceWorker.ready.then(reg => {
+            if (reg.active) {
+                reg.active.postMessage({ type: 'CACHE_LARGE_ASSETS' });
+                showLog('Requested background download of large assets');
+            }
+        });
+    }
+</script>
+
+ </body>
+ </html>
