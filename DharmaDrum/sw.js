@@ -1,13 +1,16 @@
-const CACHE_NAME = 'dharma-drum-v1';
+const CACHE_NAME = 'dharma-drum-v8';
 const ASSETS = [
-  './DharmaDrum.html',
-  './',
-  './images/Drum.jpeg',
-  './images/Gong.jpeg',
-  './images/Khanh.jpeg',
-  './audio/tieng_mo_tram.mp3',
-  './audio/ChuongThayPhuocTinh.mp3',
-  './audio/1_Khanh_23.2s.mp3'
+  'DharmaDrum.html',
+  'manifest.json',
+  'playDrum.mp4',
+  'icon-192.png',
+  'icon-512.png',
+  'images/Drum.jpeg',
+  'images/Gong.jpeg',
+  'images/Khanh.jpeg',
+  'audio/tieng_mo_tram.mp3',
+  'audio/ChuongThayPhuocTinh.mp3',
+  'audio/1_Khanh_23.2s.mp3'
 ];
 
 self.addEventListener('install', (event) => {
@@ -35,6 +38,7 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
+
       return fetch(event.request).then((response) => {
         // Put a copy in cache for future
         const copy = response.clone();
@@ -47,7 +51,7 @@ self.addEventListener('fetch', (event) => {
         return response;
       }).catch(() => {
         // fallback to cached root page
-        return caches.match('./DharmaDrum.html');
+        return caches.match('DharmaDrum.html');
       });
     })
   );
