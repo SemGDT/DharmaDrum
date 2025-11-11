@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dharma Drum</title>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+        .item {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .item:hover {
+            background: #f0f0f0;
+        }
+        .item img {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            -webkit-touch-callout: none; /* iOS: disable callout menu */
+            -webkit-user-drag: none;    /* disable image drag */
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        #debug-overlay {
+            position: fixed;
+            right: 8px;
+            top: 8px;
+            max-width: 40%;
+            max-height: 40%;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            font-size: 12px;
+            padding: 6px;
+            z-index: 99999;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="item" id="drum">
+            <img src="images/Drum.jpeg" alt="Drum" draggable="false">
+        </div>
+        <div class="item" id="khanh">
+            <img src="images/Khanh.jpeg" alt="Khanh" draggable="false">
+        </div>
+        <div class="item" id="gong">
+            <img src="images/Gong.jpeg" alt="Gong" draggable="false">
+        </div>
+    </div>
+    <audio id="audio-drum" src="audio/tieng_mo_tram.mp3"></audio>
+    <audio id="audio-gong" src="audio/ChuongThayPhuocTinh.mp3"></audio>
+    <audio id="audio-khanh" src="audio/1_Khanh_23.2s.mp3"></audio>
+    <audio id="audio-khanh-chap" src="audio/Khanh_Chap.mp3"></audio>
+ <script>
+    const HOLD_THRESHOLD = 200;
+    const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+    const isIOS = /iP(ad|od|hone)/i.test(navigator.userAgent) || 
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const FADE_TIME_MS = isIOS ? 600 : 750; // iOS shorter to compensate for lag
+
+    // --- Debug utilities ---
+    function showLog(msg) {
+        if (DEBUG) {
+            let d = document.getElementById('debug-overlay');
+            if (!d) {
+                d = document.createElement('div');
+                d.id = 'debug-overlay';
+                Object.assign(d.style, {
+                    position:'fixed', right:'8px', top:'8px',
+                    maxWidth:'40%', maxHeight:'40%',
+                    overflowY:'auto', background:'rgba(0,0,0,0.7)',
+                    color:'white', fontSize:'12px', padding:'6px',
+                    zIndex:99999, borderRadius:'6px'
+                });
+                document.body.appendChild(d);
+            }
+            const p = document.createElement('div');
+            p.textContent = (new Date()).toLocaleTimeString() + ' — ' + msg;
+            d.appendChild(p);
+            if (d.childNodes.length > 100) d.removeChild(d.firstChild);
+        }
+        console.log(msg);
+    }
+
+    // --- WebAudio setup ---
+    let audioCtx = null, masterGain = null, BUFFERS = {}, webAudioReady = false;
+    async function initWebAudio() {
+        if (audioCtx) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+        masterGain = audioCtx.createGain();
+        masterGain.connect(audioCtx.destination);
+
+        const list = [
+            ['drum','audio/tieng_mo_tram.mp3'],
+            ['gong','audio/ChuongThayPhuocTinh.mp3'],
+            ['khanh','audio/1_Khanh_23.2s.mp3']
+        ];
+        try {
+            await Promise.all(list.map(async ([name,url])=>{
+                const resp = await fetch(url);
+                const ab = await resp.arrayBuffer();
+                BUFFERS[name] = await audioCtx.decodeAudioData(ab);
+            }));
+            webAudioReady = true;
+            showLog('WebAudio ready');
+        } catch(e) {
+            showLog('WebAudio init failed');
+        }
+
+        // Listen for visibility change (screen off/on, app switching, etc.)
+        document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible') {
+            // Optionally try to resume immediately
+            try {
+            await audioCtx.resume();
+            console.log('audioCtx resumed on visibilitychange');
+            } catch (e) {
+            console.warn('Resume failed until user tap:', e);
+            }
+        }
+        });
+
+        // Always resume context on next user gesture
+        ['touchstart', 'mousedown'].forEach(evt =>
+        window.addEventListener(evt, async () => {
+            if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+            console.log('audioCtx manually resumed');
+            }
+        }, { passive: true })
+        );
+    }
+    initWebAudio();
+
+    // --- Global unlock ---
+    let audioUnlocked = false;
+
+    // --- Central playback ---
+    const activeSources = {}; // For WebAudio
+    const htmlAudios = {
+        drum: document.getElementById('audio-drum'),
+        gong: document.getElementById('audio-gong'),
+        khanh: document.getElementById('audio-khanh')
+    };
+
+    /**
+     * Play a sound by name.
+     * Options:
+     *  - fadeOut: boolean, only for valid Gong/Khanh press-and-hold
+     */
+    function playBuffer(name, opts={}) {
+        const fadeOut = opts.fadeOut === true;
+        showLog(`playBuffer t2: ${name}, fadeOut=${fadeOut}`);
+
+        const hasWeb = audioCtx && webAudioReady && BUFFERS[name];
+        const firstGesture = !audioUnlocked;
+
+        // =====================================================
+        // ===========    WEB AUDIO PATH (preferred)   =========
+        // =====================================================
+        if (hasWeb && !firstGesture && audioCtx.state === 'running') {
+            showLog(`▶️ WebAudio START: ${name} (fadeOut=${fadeOut})`);
+
+            // ----- Stop HTML audio if it's playing -----
+            const htmlAudio = htmlAudios[name];
+            if (htmlAudio) {
+                try {
+                    htmlAudio.pause();
+                    htmlAudio.currentTime = 0;
+                    showLog(`Stopped HTML audio for ${name}`);
+                } catch(e) {
+                    showLog(`Error stopping HTML audio: ${e.message}`);
+                }
+            }
+
+            if (audioCtx.state === "suspended") {
+                audioCtx.resume().catch(()=>{});
+            }
+
+            // ----- Stop previous WebAudio source -----
+            const prev = activeSources[name];
+            if (prev) {
+                try {
+                    prev.source.onended = null;
+                    prev.gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+                    prev.source.stop(0);
+                    prev.source.disconnect();
+                    prev.gainNode.disconnect();
+                    showLog(`Stopped previous WebAudio source for ${name}`);
+                } catch(e){
+                    showLog(`Error stopping previous WebAudio: ${e.message}`);
+                }
+            }
+
+            // ----- Create new source -----
+            const source = audioCtx.createBufferSource();
+            source.buffer = BUFFERS[name];
+
+            const gainNode = audioCtx.createGain();
+            gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+
+            source.connect(gainNode);
+            gainNode.connect(masterGain);
+
+            // ----- Start -----
+            source.start(0);
+            showLog(`WebAudio source started, buffer duration: ${source.buffer.duration.toFixed(2)}s`);
+
+            // ----- Apply fade-out -----
+            if (fadeOut) {
+                const now = audioCtx.currentTime;
+                const fadeTime = FADE_TIME_MS / 1000; // Convert to seconds for WebAudio
+
+                gainNode.gain.cancelScheduledValues(now);
+                gainNode.gain.setValueAtTime(1, now);
+                gainNode.gain.linearRampToValueAtTime(0, now + fadeTime);
+
+                source.stop(now + fadeTime + 0.05);
+
+                showLog(`WebAudio fade scheduled: ${fadeTime}s`);
+
+                setTimeout(() => {
+                    showLog(`WebAudio fade complete`);
+                }, FADE_TIME_MS);
+            }
+
+            activeSources[name] = { source, gainNode };
+
+            source.onended = () => {
+                if (activeSources[name]?.source === source) {
+                    activeSources[name] = null;
+                }
+            };
+
+            showLog(`▶️ WebAudio DONE: ${name} (fadeOut=${fadeOut})`);
+            return;
+        }
+
+        // =====================================================
+        // ===========     HTML AUDIO FALLBACK        ==========
+        // =====================================================
+        const a = htmlAudios[name];
+        if (!a) {
+            showLog(`No WebAudio and no HTML audio for ${name}`);
+            return;
+        }
+
+        showLog(`HTML audio for ${name} (firstGesture=${firstGesture})`);
+
+        // Mark as unlocked on first gesture
+        if (firstGesture) {
+            audioUnlocked = true;
+            showLog('Audio unlocked via HTML audio');
+            if (audioCtx && audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(()=>{});
+            }
+        }
+
+        // Stop any existing playback (fixes tap then p&h issue)
+        try {
+            a.pause();
+            a.currentTime = 0;
+            a.volume = 1;
+        } catch(e) {
+            showLog(`Error resetting HTML audio: ${e.message}`);
+        }
+
+        if (fadeOut) {
+            // Play then fade HTML volume
+            try { a.play().catch(()=>{}); } catch {}
+
+            const steps = 15; // Half of 30 for half the time
+            const delay = FADE_TIME_MS / steps; // Use shared fade time
+            let step = 0;
+            const iv = setInterval(()=>{
+                step++;
+                a.volume = Math.max(0, 1 - step/steps);
+
+                if (step >= steps) {
+                    clearInterval(iv);
+                    try { a.pause(); } catch {}
+                    a.currentTime = 0;
+                    a.volume = 1;
+                    showLog(`${name} HTML fadeOut complete`);
+                }
+            }, delay);
+        } else {
+            // normal HTML play
+            setTimeout(()=>{
+                try { a.play().catch(()=>{}); } catch {}
+                showLog(`▶️ HTML START: ${name}`);
+            }, 0);
+        }
+    }
+    // --- Drum logic ---
+    const drumElem = document.getElementById('drum');
+    let drumLastPlayTime = 0, DRUM_DEBOUNCE = Math.max(40, Math.floor(HOLD_THRESHOLD/4));
+    let drumLoopTimer=null, drumLoopActive=false, drumHoldTimer=null, drumLastBeats=[null,null], drumLastClickTime=null;
+
+    function drumPlayOnce() {
+        const now = Date.now();
+        if (now - drumLastPlayTime < DRUM_DEBOUNCE) return;
+        drumLastPlayTime = now;
+        playBuffer('drum');
+    }
+
+    function drumHoldBegin() {
+        const now = Date.now();
+        if (drumLastClickTime) {
+            const interval = now - drumLastClickTime;
+            drumLastBeats[0] = drumLastBeats[1];
+            drumLastBeats[1] = interval;
+        }
+        drumLastClickTime = now;
+        drumPlayOnce();
+
+        if(drumHoldTimer) clearTimeout(drumHoldTimer);
+        drumHoldTimer = setTimeout(()=>{
+            if(drumLastBeats[0] && drumLastBeats[1]){
+                const cadence = Math.round((drumLastBeats[0]+drumLastBeats[1])/2);
+                drumLoopActive = true;
+                function loop(){
+                    if(!drumLoopActive) return;
+                    playBuffer('drum');
+                    drumLoopTimer = setTimeout(loop,cadence);
+                }
+                drumLoopTimer = setTimeout(loop,cadence - HOLD_THRESHOLD);
+            }
+        }, HOLD_THRESHOLD);
+    }
+    function drumHoldEnd() { if(drumHoldTimer) clearTimeout(drumHoldTimer); }
+    function drumExitLoop() { drumLoopActive=false; if(drumLoopTimer) clearTimeout(drumLoopTimer); }
+    function drumPressStart() { drumExitLoop(); drumHoldBegin(); }
+
+    drumElem.addEventListener('mousedown', drumPressStart);
+    drumElem.addEventListener('mouseup', drumHoldEnd);
+    drumElem.addEventListener('mouseleave', drumHoldEnd);
+    drumElem.addEventListener('touchstart', async e => {
+        // Only block scrolling/zoom if already unlocked
+        if (audioUnlocked) e.preventDefault();
+
+        // Ensure audio context is resumed *within this same gesture*
+        if (audioCtx && audioCtx.state === 'suspended') {
+            try {
+                await audioCtx.resume();
+                showLog('AudioContext resumed (touchstart)');
+            } catch (err) {
+                showLog('Resume failed: ' + err.message);
+            }
+        }
+
+        drumPressStart();
+    }, { passive: false });
+    drumElem.addEventListener('touchend', drumHoldEnd);
+    drumElem.addEventListener('touchcancel', drumHoldEnd);
+
+    // --- Gong & Khanh logic (with fade-out) ---
+    function setupHoldFade(elemName, htmlAudio){
+        const elem = document.getElementById(elemName);
+        let holdTimer = null;
+        let holdStart = 0;
+        let held = false;
+
+    function onStart(e){
+        e.preventDefault && e.preventDefault();
+        holdStart = Date.now();
+        held = false;
+
+        // Ensure WebAudio context resumed
+        if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+
+        // Schedule fade-out
+        holdTimer = setTimeout(()=>{
+            holdTimer = null;
+            held = true;
+            playBuffer(elemName, { fadeOut: true });  // playBuffer handles everything!
+        }, HOLD_THRESHOLD);
+    }
+        function onEnd(e){
+            e.preventDefault && e.preventDefault();
+            const elapsed = Date.now() - holdStart;
+
+            if(holdTimer){ clearTimeout(holdTimer); holdTimer = null; }
+
+            // Only normal tap (quick release) plays WebAudio
+            if(!held && elapsed < HOLD_THRESHOLD){
+                playBuffer(elemName);
+            }
+        }
+
+        elem.addEventListener('touchstart', onStart, { passive: false });
+        elem.addEventListener('mousedown', onStart, { passive: false });
+        elem.addEventListener('touchend', onEnd);
+        elem.addEventListener('mouseup', onEnd);
+        elem.addEventListener('touchcancel', onEnd);
+        elem.addEventListener('mouseleave', onEnd);
+    }
+
+    // To support first press and hold playing sound
+    setupHoldFade('gong', htmlAudios['gong']);
+    setupHoldFade('khanh', htmlAudios['khanh']);
+
+    // --- Disable context menu ---
+    document.addEventListener('contextmenu', e=>e.preventDefault());
+
+    // --- Service Worker ---
+    if('serviceWorker' in navigator){
+        navigator.serviceWorker.register('./sw.js')
+            .then(()=>showLog('SW registered'))
+            .catch(err=>showLog('SW reg failed: '+err.message));
+    }
+</script>
+
+ </body>
+ </html>
